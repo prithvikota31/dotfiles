@@ -21,7 +21,9 @@ If `feature_ref` is missing, ask the user for it before running anything. Do not
 
 Before running the script:
 1. Confirm the current working directory is inside the repo the user wants to review in (`git rev-parse --show-toplevel`). If unsure, ask.
-2. Confirm `git status --porcelain` is empty. If not, stop and tell the user to commit or stash first — do NOT run the script on a dirty tree.
+2. Confirm there are no local modifications to **tracked** files:
+   `git status --porcelain --untracked-files=no` must be empty.
+   Untracked files (e.g. nested sub-projects, build artifacts) are fine — git switch/reset leaves them alone. Only modifications to tracked files would be at risk.
 3. Confirm a branch named `ai-pr-review` does not already exist. If it does, tell the user to run `/pr-review-end` first.
 
 ## Run
