@@ -48,8 +48,11 @@ cd "$repo_root"
 STATE_FILE="$(git rev-parse --git-path PR_REVIEW_PREV_BRANCH)"
 
 # --- clean tree check ---
-if [[ -n "$(git status --porcelain)" ]]; then
-    err "working tree is not clean. Commit or stash changes first."
+# Only block on modifications to TRACKED files. Untracked files are not
+# touched by git switch / reset, so they don't affect this workflow (this
+# matters for monorepos that keep nested untracked sub-projects on disk).
+if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
+    err "tracked files have local modifications. Commit or stash them first."
 fi
 
 # --- review branch must not already exist ---
