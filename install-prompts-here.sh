@@ -8,13 +8,18 @@
 # ----------------------------------------------------------------------------
 # WHAT THIS SCRIPT DOES
 # ----------------------------------------------------------------------------
-# 1. Detects the root of the git repo you're currently inside.
-# 2. Creates `<repo>/.github/prompts/` if missing.
+# 1. Verifies you're inside a git repo (for safety) but installs at the
+#    CURRENT DIRECTORY (`$PWD`), not the git top-level. This matters for
+#    repos where the VS Code workspace is a subdirectory of the git root
+#    (e.g. workspace = `repo/src/`, git root = `repo/`). VS Code only scans
+#    `<workspace>/.github/prompts/`, so the prompts must live there.
+# 2. Creates `$PWD/.github/prompts/` if missing.
 # 3. Symlinks the two prompt files there, pointing back at this dotfiles repo:
-#       <repo>/.github/prompts/pr-review-start.prompt.md  -> ~/dotfiles/...
-#       <repo>/.github/prompts/pr-review-end.prompt.md    -> ~/dotfiles/...
-# 4. Adds those two paths to `.git/info/exclude` so they never show up as
-#    untracked files in `git status` (local-only, never committed).
+#       $PWD/.github/prompts/pr-review-start.prompt.md  -> ~/dotfiles/...
+#       $PWD/.github/prompts/pr-review-end.prompt.md    -> ~/dotfiles/...
+# 4. Adds those two paths to `.git/info/exclude` (relative to git root) so
+#    they never show up as untracked files in `git status` (local-only,
+#    never committed).
 #
 # Idempotent: safe to run multiple times. `ln -sfn` overwrites stale symlinks,
 # and the exclude entries are deduplicated.
@@ -36,9 +41,11 @@
 #   grep -q 'HOME/bin' ~/.bashrc || echo 'export PATH="$HOME/bin:$PATH"' >> ~/.bashrc
 #   source ~/.bashrc
 #
-# Step 1 (per repo — run this script from inside the target repo):
+# Step 1 (per repo — run from your VS Code WORKSPACE root, which is what
+#         VS Code opens when you launch it; may be a subdirectory of the git
+#         repo, e.g. `repo/src/`):
 #
-#   cd /path/to/your/repo
+#   cd /path/to/your/vscode/workspace/root
 #   ~/dotfiles/install-prompts-here.sh
 #
 # Step 2:
@@ -72,14 +79,23 @@ info() { echo "[install-prompts] $*"; }
 [[ -d "$DOTFILES/vscode/prompts" ]] \
     || err "dotfiles not found at '$DOTFILES'. Clone it first: git clone https://github.com/prithvikota31/dotfiles.git ~/dotfiles"
 
-# --- sanity: must be inside a git repo ---
+# --- sanity: must be inside a git repo (so we can write .git/info/exclude) ---
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" \
-    || err "not inside a git repository. cd into a repo first, then re-run."
+    || err "not inside a git repository. cd into your workspace first, then re-run."
 
-info "target repo: $repo_root"
+# Target the CURRENT DIRECTORY, not the git top-level. VS Code scans the
+# workspace root for .github/prompts/, and the workspace may be a subdirectory
+# of the git repo (e.g. Storage-xDPU-xStore/src/ inside Storage-xDPU-xStore/).
+workspace="$PWD"
+info "git repo root: $repo_root"
+info "workspace:     $workspace"
 
-# --- ensure .github/prompts/ exists ---
-prompts_dir="$repo_root/.github/prompts"
+if [[ "$workspace" != "$repo_root" ]]; then
+    info "note: workspace differs from git root — installing at workspace."
+fi
+
+# --- ensure .github/prompts/ exists at the workspace ---
+prompts_dir="$workspace/.github/prompts"
 mkdir -p "$prompts_dir"
 
 # --- ensure .git/info/exclude exists (rare cases it doesn't) ---
@@ -87,21 +103,29 @@ exclude_file="$(git rev-parse --git-path info/exclude)"
 mkdir -p "$(dirname "$exclude_file")"
 touch "$exclude_file"
 
+# Path to record in .git/info/exclude must be relative to the git repo root
+workspace_rel_to_repo="${workspace#"$repo_root"}"
+workspace_rel_to_repo="${workspace_rel_to_repo#/}"  # strip leading slash if any
+
 # --- symlink each prompt + mark as locally-ignored ---
 for f in "${PROMPTS[@]}"; do
     src="$DOTFILES/vscode/prompts/$f"
     dst="$prompts_dir/$f"
-    rel=".github/prompts/$f"
+    if [[ -n "$workspace_rel_to_repo" ]]; then
+        rel="$workspace_rel_to_repo/.github/prompts/$f"
+    else
+        rel=".github/prompts/$f"
+    fi
 
     [[ -f "$src" ]] || err "missing source file: $src"
 
     ln -sfn "$src" "$dst"
-    info "linked: $rel -> $src"
+    info "linked: $dst -> $src"
 
     # Add to .git/info/exclude (local-only ignore, never committed)
     if ! grep -qxF "$rel" "$exclude_file"; then
         echo "$rel" >> "$exclude_file"
-        info "ignored locally: $rel"
+        info "ignored locally (relative to git root): $rel"
     fi
 done
 
