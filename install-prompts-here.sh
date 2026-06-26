@@ -2,24 +2,35 @@
 #
 # install-prompts-here.sh
 #
-# Installs the Copilot prompts (/pr-review-start, /pr-review-end) into the
-# current git repository so they appear as slash commands in VS Code Chat.
+# Sets up the PR review Copilot workflow end-to-end:
+#   1. (Machine-level, one-time, idempotent) Symlinks the bash scripts into
+#      ~/bin and ensures ~/bin is on $PATH. No-op on re-runs once configured.
+#   2. (Per-repo) Installs the Copilot prompts (/pr-review-start,
+#      /pr-review-end) into the current workspace's .github/prompts/ so they
+#      appear as slash commands in VS Code Chat.
 #
 # ----------------------------------------------------------------------------
 # WHAT THIS SCRIPT DOES
 # ----------------------------------------------------------------------------
-# 1. Verifies you're inside a git repo (for safety) but installs at the
-#    CURRENT DIRECTORY (`$PWD`), not the git top-level. This matters for
-#    repos where the VS Code workspace is a subdirectory of the git root
-#    (e.g. workspace = `repo/src/`, git root = `repo/`). VS Code only scans
-#    `<workspace>/.github/prompts/`, so the prompts must live there.
-# 2. Creates `$PWD/.github/prompts/` if missing.
-# 3. Symlinks the two prompt files there, pointing back at this dotfiles repo:
-#       $PWD/.github/prompts/pr-review-start.prompt.md  -> ~/dotfiles/...
-#       $PWD/.github/prompts/pr-review-end.prompt.md    -> ~/dotfiles/...
-# 4. Adds those two paths to `.git/info/exclude` (relative to git root) so
-#    they never show up as untracked files in `git status` (local-only,
-#    never committed).
+#
+# Phase A — machine bootstrap (idempotent, runs every time but is a no-op
+#          once already done):
+#   - Ensures ~/bin exists.
+#   - Symlinks ~/bin/pr-review-start.sh and ~/bin/pr-review-end.sh to the
+#     real scripts in ~/dotfiles/bin/.
+#   - Adds `export PATH="$HOME/bin:$PATH"` to ~/.bashrc if not present.
+#
+# Phase B — per-repo prompt install:
+#   - Verifies you're inside a git repo (for safety) but installs at the
+#     CURRENT DIRECTORY ($PWD), not the git top-level. This matters for
+#     repos where the VS Code workspace is a subdirectory of the git root
+#     (e.g. workspace = `repo/src/`, git root = `repo/`). VS Code only scans
+#     `<workspace>/.github/prompts/`, so the prompts must live there.
+#   - Creates $PWD/.github/prompts/ if missing.
+#   - Symlinks the two prompt files there, pointing back at this dotfiles repo.
+#   - Adds those two paths to .git/info/exclude (relative to git root) so
+#     they never show up as untracked files in `git status` (local-only,
+#     never committed).
 #
 # Idempotent: safe to run multiple times. `ln -sfn` overwrites stale symlinks,
 # and the exclude entries are deduplicated.
@@ -27,32 +38,20 @@
 # ----------------------------------------------------------------------------
 # HOW TO RUN
 # ----------------------------------------------------------------------------
-# Step 0 (one-time per machine — do this BEFORE running this script):
+# Prereq (one-time per machine — the only manual step):
 #
-#   # Clone the dotfiles repo
 #   git clone https://github.com/prithvikota31/dotfiles.git ~/dotfiles
 #
-#   # Symlink the bash scripts into ~/bin so they're on $PATH
-#   mkdir -p ~/bin
-#   ln -sfn ~/dotfiles/bin/pr-review-start.sh ~/bin/pr-review-start.sh
-#   ln -sfn ~/dotfiles/bin/pr-review-end.sh   ~/bin/pr-review-end.sh
-#
-#   # Make sure ~/bin is on $PATH (skip if already configured)
-#   grep -q 'HOME/bin' ~/.bashrc || echo 'export PATH="$HOME/bin:$PATH"' >> ~/.bashrc
-#   source ~/.bashrc
-#
-# Step 1 (per repo — run from your VS Code WORKSPACE root, which is what
-#         VS Code opens when you launch it; may be a subdirectory of the git
-#         repo, e.g. `repo/src/`):
+# Then in any VS Code workspace root:
 #
 #   cd /path/to/your/vscode/workspace/root
 #   ~/dotfiles/install-prompts-here.sh
 #
-# Step 2:
+# After:
 #
 #   In VS Code: Ctrl+Shift+P -> "Developer: Reload Window"
-#   Then in Copilot Chat, type "/" and you'll see /pr-review-start and
-#   /pr-review-end alongside any existing prompts.
+#   In Copilot Chat, type "/" -> you'll see /pr-review-start and /pr-review-end.
+#   If the first run added PATH to ~/.bashrc, also run: source ~/.bashrc
 #
 # ----------------------------------------------------------------------------
 # UNINSTALL (per repo)
@@ -61,6 +60,10 @@
 #   rm .github/prompts/pr-review-start.prompt.md
 #   rm .github/prompts/pr-review-end.prompt.md
 #   # The .git/info/exclude entries can stay; they're harmless.
+#
+# UNINSTALL (machine-level)
+#   rm ~/bin/pr-review-start.sh ~/bin/pr-review-end.sh
+#   # Remove the PATH line from ~/.bashrc manually if desired.
 #
 # ----------------------------------------------------------------------------
 
@@ -71,41 +74,83 @@ PROMPTS=(
     "pr-review-start.prompt.md"
     "pr-review-end.prompt.md"
 )
+SCRIPTS=(
+    "pr-review-start.sh"
+    "pr-review-end.sh"
+)
 
 err()  { echo "error: $*" >&2; exit 1; }
 info() { echo "[install-prompts] $*"; }
 
 # --- sanity: dotfiles repo must exist ---
-[[ -d "$DOTFILES/vscode/prompts" ]] \
+[[ -d "$DOTFILES/vscode/prompts" && -d "$DOTFILES/bin" ]] \
     || err "dotfiles not found at '$DOTFILES'. Clone it first: git clone https://github.com/prithvikota31/dotfiles.git ~/dotfiles"
 
-# --- sanity: must be inside a git repo (so we can write .git/info/exclude) ---
+# ============================================================================
+# PHASE A — Machine bootstrap (idempotent)
+# ============================================================================
+
+info "phase A: machine setup"
+mkdir -p "$HOME/bin"
+
+for s in "${SCRIPTS[@]}"; do
+    src="$DOTFILES/bin/$s"
+    dst="$HOME/bin/$s"
+    [[ -f "$src" ]] || err "missing source script: $src"
+
+    if [[ -L "$dst" && "$(readlink -f "$dst")" == "$(readlink -f "$src")" ]]; then
+        continue   # already correctly symlinked — quiet skip
+    fi
+    ln -sfn "$src" "$dst"
+    info "  linked ~/bin/$s -> $src"
+done
+
+# Add ~/bin to PATH in ~/.bashrc if missing (only writes once)
+BASHRC="$HOME/.bashrc"
+PATH_LINE='export PATH="$HOME/bin:$PATH"'
+if [[ -f "$BASHRC" ]] && grep -qF "$PATH_LINE" "$BASHRC"; then
+    :   # already configured
+else
+    {
+        echo ""
+        echo "# Added by ~/dotfiles/install-prompts-here.sh"
+        echo "$PATH_LINE"
+    } >> "$BASHRC"
+    info "  added '~/bin' to PATH in $BASHRC"
+    info "  -> run 'source ~/.bashrc' in your shell after this script finishes"
+fi
+
+# ============================================================================
+# PHASE B — Per-repo prompt install
+# ============================================================================
+
+info "phase B: per-repo prompt install"
+
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" \
     || err "not inside a git repository. cd into your workspace first, then re-run."
 
-# Target the CURRENT DIRECTORY, not the git top-level. VS Code scans the
-# workspace root for .github/prompts/, and the workspace may be a subdirectory
-# of the git repo (e.g. Storage-xDPU-xStore/src/ inside Storage-xDPU-xStore/).
+# Target $PWD, not git top-level — VS Code scans the workspace root for
+# .github/prompts/, and workspace may be a subdir of the git repo.
 workspace="$PWD"
-info "git repo root: $repo_root"
-info "workspace:     $workspace"
+info "  git repo root: $repo_root"
+info "  workspace:     $workspace"
 
 if [[ "$workspace" != "$repo_root" ]]; then
-    info "note: workspace differs from git root — installing at workspace."
+    info "  note: workspace differs from git root — installing at workspace."
 fi
 
 # --- ensure .github/prompts/ exists at the workspace ---
 prompts_dir="$workspace/.github/prompts"
 mkdir -p "$prompts_dir"
 
-# --- ensure .git/info/exclude exists (rare cases it doesn't) ---
+# --- ensure .git/info/exclude exists ---
 exclude_file="$(git rev-parse --git-path info/exclude)"
 mkdir -p "$(dirname "$exclude_file")"
 touch "$exclude_file"
 
-# Path to record in .git/info/exclude must be relative to the git repo root
+# Path recorded in .git/info/exclude must be relative to the git repo root.
 workspace_rel_to_repo="${workspace#"$repo_root"}"
-workspace_rel_to_repo="${workspace_rel_to_repo#/}"  # strip leading slash if any
+workspace_rel_to_repo="${workspace_rel_to_repo#/}"
 
 # --- symlink each prompt + mark as locally-ignored ---
 for f in "${PROMPTS[@]}"; do
@@ -120,12 +165,11 @@ for f in "${PROMPTS[@]}"; do
     [[ -f "$src" ]] || err "missing source file: $src"
 
     ln -sfn "$src" "$dst"
-    info "linked: $dst -> $src"
+    info "  linked $dst -> $src"
 
-    # Add to .git/info/exclude (local-only ignore, never committed)
     if ! grep -qxF "$rel" "$exclude_file"; then
         echo "$rel" >> "$exclude_file"
-        info "ignored locally (relative to git root): $rel"
+        info "  ignored locally (relative to git root): $rel"
     fi
 done
 
